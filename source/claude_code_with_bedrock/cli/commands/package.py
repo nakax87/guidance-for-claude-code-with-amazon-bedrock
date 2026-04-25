@@ -1429,8 +1429,11 @@ RUN pyinstaller \
         # Windows uses Nuitka via CodeBuild
         if target_platform == "windows":
             # Check if the Windows binary already exists (built by _build_executable)
+            windows_dist = output_dir / "otel-helper-windows.dist"
             windows_binary = output_dir / "otel-helper-windows.exe"
-            if windows_binary.exists():
+            if windows_dist.is_dir():
+                return windows_dist
+            elif windows_binary.exists():
                 return windows_binary
             else:
                 # If not, we need to build via CodeBuild (but this should have been done already)
@@ -2063,17 +2066,33 @@ REM Create directory
 echo Installing authentication tools...
 if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
 
-REM Copy credential process executable with renamed target
+REM Copy credential process executable (prefer .dist artifact, fallback to legacy .exe)
 echo Copying credential process...
-copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
+if exist "credential-process-windows.dist\\credential-process-windows.exe" (
+    copy /Y "credential-process-windows.dist\\credential-process-windows.exe" ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
+) else if exist "credential-process-windows.exe" (
+    echo WARNING: Legacy credential-process-windows.exe detected. Please migrate to .dist artifacts.
+    copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
+) else (
+    echo ERROR: Missing Windows credential process artifact.
+    echo        Expected credential-process-windows.dist\\credential-process-windows.exe
+    pause
+    exit /b 1
+)
 if %errorlevel% neq 0 (
-    echo ERROR: Failed to copy credential-process-windows.exe
+    echo ERROR: Failed to copy credential process executable
     pause
     exit /b 1
 )
 
-REM Copy OTEL helper if it exists with renamed target
-if exist "otel-helper-windows.exe" (
+REM Copy OTEL helper if it exists with renamed target (.dist preferred)
+if exist "otel-helper-windows.dist\\otel-helper-windows.exe" (
+    echo Copying OTEL helper...
+    copy /Y "otel-helper-windows.dist\\otel-helper-windows.exe" ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
+) else if exist "otel-helper-windows.exe" (
+    echo WARNING: Legacy otel-helper-windows.exe detected. Please migrate to .dist artifacts.
     echo Copying OTEL helper...
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
 )
@@ -2246,6 +2265,9 @@ install.bat
 
 The installer will:
 - Check for AWS CLI installation
+- Use `credential-process-windows.dist\\credential-process-windows.exe` (preferred)
+  or legacy `credential-process-windows.exe` (backward compatible with warning)
+- Use `otel-helper-windows.dist\\otel-helper-windows.exe` when included
 - Copy authentication tools to `%USERPROFILE%\\claude-code-with-bedrock`
 - Configure the AWS profile "ClaudeCode"
 - Test the authentication
