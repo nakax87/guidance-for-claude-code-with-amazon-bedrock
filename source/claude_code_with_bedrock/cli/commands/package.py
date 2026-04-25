@@ -2066,14 +2066,19 @@ REM Create directory
 echo Installing authentication tools...
 if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
 
-REM Copy credential process executable (prefer .dist artifact, fallback to legacy .exe)
+REM Copy credential process artifact (prefer .dist directory, fallback to legacy .exe)
 echo Copying credential process...
 if exist "credential-process-windows.dist\\credential-process-windows.exe" (
-    copy /Y "credential-process-windows.dist\\credential-process-windows.exe" ^
-        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
+    echo   Using credential-process-windows.dist directory
+    if exist "%USERPROFILE%\\claude-code-with-bedrock\\credential-process-windows.dist" (
+        rmdir /S /Q "%USERPROFILE%\\claude-code-with-bedrock\\credential-process-windows.dist"
+    )
+    xcopy /E /I /Y "credential-process-windows.dist" ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process-windows.dist\\" >nul
 ) else if exist "credential-process-windows.exe" (
     echo WARNING: Legacy credential-process-windows.exe detected. Please migrate to .dist artifacts.
-    copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
+    copy /Y "credential-process-windows.exe" ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
 ) else (
     echo ERROR: Missing Windows credential process artifact.
     echo        Expected credential-process-windows.dist\\credential-process-windows.exe
@@ -2086,11 +2091,15 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM Copy OTEL helper if it exists with renamed target (.dist preferred)
+REM Copy OTEL helper (.dist preferred, legacy .exe fallback)
 if exist "otel-helper-windows.dist\\otel-helper-windows.exe" (
     echo Copying OTEL helper...
-    copy /Y "otel-helper-windows.dist\\otel-helper-windows.exe" ^
-        "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
+    echo   Using otel-helper-windows.dist directory
+    if exist "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper-windows.dist" (
+        rmdir /S /Q "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper-windows.dist"
+    )
+    xcopy /E /I /Y "otel-helper-windows.dist" ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper-windows.dist\\" >nul
 ) else if exist "otel-helper-windows.exe" (
     echo WARNING: Legacy otel-helper-windows.exe detected. Please migrate to .dist artifacts.
     echo Copying OTEL helper...
@@ -2121,9 +2130,9 @@ if exist "claude-settings" (
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholders
             powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
+            "$otelPath = if (Test-Path '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper-windows.dist\\\\otel-helper-windows.exe') {{ '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper-windows.dist\\\\otel-helper-windows.exe' }} elseif (Test-Path '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe') {{ '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' }} else {{ '' }}; ^
             -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
+            $credPath = if (Test-Path '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process-windows.dist\\\\credential-process-windows.exe') {{ '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process-windows.dist\\\\credential-process-windows.exe' }} else {{ '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' }}; ^
             -replace '\\\\\\\\', '/'; ^
             (Get-Content 'claude-settings\\\\settings.json') ^
             -replace '__OTEL_HELPER_PATH__', $otelPath ^
@@ -2148,9 +2157,14 @@ for /f %%p in ('powershell -Command ^
     "& {{$c=Get-Content config.json|ConvertFrom-Json;$c.'%%p'.aws_region}}"') do set PROFILE_REGION=%%r
 
 
-    REM Set credential process with --profile flag (cross-platform, no wrapper needed)
-    aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+    REM Set credential process with --profile flag (.dist preferred, legacy .exe fallback)
+    if exist "%USERPROFILE%\\claude-code-with-bedrock\\credential-process-windows.dist\\credential-process-windows.exe" (
+        aws configure set credential_process ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process-windows.dist\\credential-process-windows.exe --profile %%p" --profile %%p
+    ) else (
+        aws configure set credential_process ^
+        "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+    )
 
 
     REM Set region
