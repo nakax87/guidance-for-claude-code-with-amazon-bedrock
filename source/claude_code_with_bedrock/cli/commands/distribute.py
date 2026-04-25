@@ -82,6 +82,7 @@ class DistributeCommand(Command):
             "credential-process-linux-x64",
             "credential-process-linux-arm64",
             "credential-process-windows.exe",
+            "credential-process-windows.dist",
             "config.json",
             "install.sh",
         ]
@@ -141,12 +142,20 @@ class DistributeCommand(Command):
             "macos-intel": "credential-process-macos-intel",
             "linux-x64": "credential-process-linux-x64",
             "linux-arm64": "credential-process-linux-arm64",
-            "windows": "credential-process-windows.exe",
         }
 
         for platform, filename in platform_files.items():
             if (build_dir / filename).exists():
                 platforms.append(platform)
+
+        # Windows (preferred): Nuitka standalone directory artifact
+        if (build_dir / "credential-process-windows.dist").is_dir():
+            if "windows" not in platforms:
+                platforms.append("windows")
+        # Backward compatibility: legacy single-file executable
+        elif (build_dir / "credential-process-windows.exe").exists():
+            if "windows" not in platforms:
+                platforms.append("windows")
 
         return platforms
 
@@ -288,6 +297,13 @@ class DistributeCommand(Command):
         # Use selected build path for distribution
         package_path = selected_build_path
         console.print(f"\n[green]Using build: {package_path.parent.name}/{package_path.name}[/green]")
+        if (package_path / "credential-process-windows.exe").exists() and not (
+            package_path / "credential-process-windows.dist"
+        ).is_dir():
+            console.print(
+                "[yellow]⚠️  Legacy Windows artifact detected (credential-process-windows.exe). "
+                "This is supported for now, but .dist is recommended.[/yellow]"
+            )
 
         # Load configuration
         config = Config.load()
@@ -448,8 +464,9 @@ class DistributeCommand(Command):
 
         # Check for Windows binaries and auto-download if needed
         console.print("\n[bold]Checking for Windows binaries...[/bold]")
+        windows_dist = package_path / "credential-process-windows.dist"
         windows_exe = package_path / "credential-process-windows.exe"
-        if not windows_exe.exists():
+        if not windows_dist.is_dir() and not windows_exe.exists():
             # Check if Windows build is completed and download it
             try:
                 project_name = f"{profile.identity_pool_name}-windows-build"
@@ -483,8 +500,10 @@ class DistributeCommand(Command):
                             break
             except Exception as e:
                 console.print(f"  [dim]Could not check Windows build status: {e}[/dim]")
-        else:
+        elif windows_dist.is_dir():
             console.print("  [green]✓ Windows binaries found[/green]")
+        else:
+            console.print("  [yellow]⚠️  Legacy Windows .exe artifact found (please migrate to .dist)[/yellow]")
 
         # Map available binaries to platforms
         console.print("\n[bold]Scanning package directory...[/bold]")
@@ -492,6 +511,8 @@ class DistributeCommand(Command):
         # Platform file mappings
         platform_files = {
             "windows": [
+                ("credential-process-windows.dist", "credential-process-windows.dist"),
+                ("otel-helper-windows.dist", "otel-helper-windows.dist"),
                 ("credential-process-windows.exe", "credential-process-windows.exe"),
                 ("otel-helper-windows.exe", "otel-helper-windows.exe"),
                 ("install.bat", "install.bat"),
@@ -525,7 +546,12 @@ class DistributeCommand(Command):
             has_platform = False
             for source_file, _ in files:
                 # Check if this is an executable (contains these strings, not just ends with them)
-                if source_file.endswith(".exe") or "credential-process" in source_file or "otel-helper" in source_file:
+                if (
+                    source_file.endswith(".exe")
+                    or source_file.endswith(".dist")
+                    or "credential-process" in source_file
+                    or "otel-helper" in source_file
+                ):
                     if (package_path / source_file).exists():
                         has_platform = True
                         break
@@ -600,7 +626,13 @@ class DistributeCommand(Command):
                     for source_file, archive_name in files:
                         source_path = package_path / source_file
                         if source_path.exists():
-                            zipf.write(source_path, f"claude-code-package/{archive_name}")
+                            if source_path.is_dir():
+                                for file in source_path.rglob("*"):
+                                    if file.is_file():
+                                        rel_path = file.relative_to(source_path)
+                                        zipf.write(file, f"claude-code-package/{archive_name}/{rel_path}")
+                            else:
+                                zipf.write(source_path, f"claude-code-package/{archive_name}")
 
                     # Include claude-settings if it exists
                     settings_dir = package_path / "claude-settings"
@@ -678,14 +710,24 @@ class DistributeCommand(Command):
             console.print(f"  ✓ macOS Intel executable (built: {mod_time.strftime('%Y-%m-%d %H:%M')})")
             found_platforms.append("macos-intel")
 
-        # Check for Windows executables
+        # Check for Windows artifacts (.dist preferred, .exe legacy fallback)
+        windows_dist = package_path / "credential-process-windows.dist"
         windows_exe = package_path / "credential-process-windows.exe"
-        windows_exe_time = None
-        if windows_exe.exists():
+        windows_artifact = windows_dist if windows_dist.is_dir() else windows_exe
+        windows_artifact_time = None
+        if windows_artifact.exists():
             from datetime import timezone
 
-            windows_exe_time = datetime.fromtimestamp(windows_exe.stat().st_mtime, tz=timezone.utc)
-            console.print(f"  ✓ Windows executable (built: {windows_exe_time.strftime('%Y-%m-%d %H:%M')})")
+            windows_artifact_time = datetime.fromtimestamp(windows_artifact.stat().st_mtime, tz=timezone.utc)
+            if windows_dist.is_dir():
+                console.print(
+                    f"  ✓ Windows dist artifact (built: {windows_artifact_time.strftime('%Y-%m-%d %H:%M')})"
+                )
+            else:
+                console.print(
+                    f"  ⚠️  Windows legacy executable (built: {windows_artifact_time.strftime('%Y-%m-%d %H:%M')})"
+                )
+                console.print("    [yellow]Please migrate to credential-process-windows.dist[/yellow]")
             found_platforms.append("windows")
 
             # Check if there are newer Windows builds available and download them
@@ -705,7 +747,7 @@ class DistributeCommand(Command):
                     for build in builds_response.get("builds", []):
                         if build["buildStatus"] == "SUCCEEDED":
                             build_time = build.get("endTime", build.get("startTime"))
-                            if build_time and build_time > windows_exe_time:
+                            if build_time and build_time > windows_artifact_time:
                                 console.print(
                                     f"    [yellow]⚠️  Newer Windows build available "
                                     f"(completed {build_time.strftime('%Y-%m-%d %H:%M')})[/yellow]"
@@ -716,8 +758,13 @@ class DistributeCommand(Command):
                                 if self._download_windows_artifacts(profile, package_path, console):
                                     console.print("    [green]✓ Downloaded newer Windows artifacts[/green]")
                                     # Update the timestamp
-                                    windows_exe_time = datetime.fromtimestamp(
-                                        windows_exe.stat().st_mtime, tz=timezone.utc
+                                    updated_artifact = (
+                                        package_path / "credential-process-windows.dist"
+                                        if (package_path / "credential-process-windows.dist").is_dir()
+                                        else package_path / "credential-process-windows.exe"
+                                    )
+                                    windows_artifact_time = datetime.fromtimestamp(
+                                        updated_artifact.stat().st_mtime, tz=timezone.utc
                                     )
                                 else:
                                     console.print(
@@ -748,7 +795,7 @@ class DistributeCommand(Command):
                             # Found a successful build, download it
                             build_time = build.get("endTime", build.get("startTime"))
                             console.print(
-                                f"  ⚠️  Windows executable [yellow](found completed build from "
+                                f"  ⚠️  Windows artifact [yellow](found completed build from "
                                 f"{build_time.strftime('%Y-%m-%d %H:%M')})[/yellow]"
                             )
                             console.print("    [cyan]Downloading Windows artifacts...[/cyan]")
@@ -761,7 +808,7 @@ class DistributeCommand(Command):
                                 console.print("    [yellow]Failed to download Windows artifacts[/yellow]")
                             break
                         elif build["buildStatus"] == "IN_PROGRESS":
-                            console.print("  ⚠️  Windows executable [yellow](build in progress)[/yellow]")
+                            console.print("  ⚠️  Windows artifact [yellow](build in progress)[/yellow]")
                             break
             except Exception:
                 pass  # Continue to check for build info file
@@ -780,9 +827,9 @@ class DistributeCommand(Command):
                         if response.get("builds"):
                             build = response["builds"][0]
                             if build["buildStatus"] == "IN_PROGRESS":
-                                console.print("  ⚠️  Windows executable [yellow](build in progress)[/yellow]")
+                                console.print("  ⚠️  Windows artifact [yellow](build in progress)[/yellow]")
                             elif build["buildStatus"] == "SUCCEEDED":
-                                console.print("  ⚠️  Windows executable [yellow](build completed)[/yellow]")
+                                console.print("  ⚠️  Windows artifact [yellow](build completed)[/yellow]")
                                 console.print("    [cyan]Downloading Windows artifacts...[/cyan]")
 
                                 if self._download_windows_artifacts(profile, package_path, console):
@@ -791,11 +838,11 @@ class DistributeCommand(Command):
                                 else:
                                     console.print("    [yellow]Failed to download Windows artifacts[/yellow]")
                             else:
-                                console.print("  ✗ Windows executable [red](build failed)[/red]")
+                                console.print("  ✗ Windows artifact [red](build failed)[/red]")
                     except Exception:
-                        console.print("  ✗ Windows executable [red](not found)[/red]")
+                        console.print("  ✗ Windows artifact [red](not found)[/red]")
                 elif not windows_downloaded:
-                    console.print("  ✗ Windows executable [red](not built)[/red]")
+                    console.print("  ✗ Windows artifact [red](not built)[/red]")
 
         # Check for Linux executables
         linux_x64 = package_path / "credential-process-linux-x64"
@@ -1103,12 +1150,14 @@ class DistributeCommand(Command):
             "credential-process-macos-intel",
             "credential-process-linux-x64",
             "credential-process-linux-arm64",
+            "credential-process-windows.dist",
             "credential-process-windows.exe",
             # OTEL helpers
             "otel-helper-macos-arm64",
             "otel-helper-macos-intel",
             "otel-helper-linux-x64",
             "otel-helper-linux-arm64",
+            "otel-helper-windows.dist",
             "otel-helper-windows.exe",
             # Installation scripts
             "install.sh",
@@ -1127,7 +1176,10 @@ class DistributeCommand(Command):
         for filename in required_files:
             source_file = package_path / filename
             if source_file.exists():
-                shutil.copy2(source_file, package_temp_dir / filename)
+                if source_file.is_dir():
+                    shutil.copytree(source_file, package_temp_dir / filename)
+                else:
+                    shutil.copy2(source_file, package_temp_dir / filename)
 
         # Create zip archive with contents at root level
         # When extracted, it will create claude-code-package/ with files directly inside
@@ -1250,6 +1302,28 @@ class DistributeCommand(Command):
                 # Extract binaries
                 with zipfile.ZipFile(zip_path, "r") as zip_ref:
                     zip_ref.extractall(package_path)
+
+                windows_dist = package_path / "credential-process-windows.dist"
+                legacy_windows_exe = package_path / "credential-process-windows.exe"
+                if windows_dist.is_dir():
+                    console.print("  [green]✓ Placed credential-process-windows.dist[/green]")
+                elif legacy_windows_exe.exists():
+                    console.print(
+                        "  [yellow]⚠️  Downloaded legacy credential-process-windows.exe "
+                        "(consider rebuilding to .dist)[/yellow]"
+                    )
+                else:
+                    console.print(
+                        "  [yellow]⚠️  Windows artifact downloaded but credential-process-windows.* not found[/yellow]"
+                    )
+
+                otel_dist = package_path / "otel-helper-windows.dist"
+                legacy_otel_exe = package_path / "otel-helper-windows.exe"
+                if legacy_otel_exe.exists() and not otel_dist.is_dir():
+                    console.print(
+                        "  [yellow]⚠️  Downloaded legacy otel-helper-windows.exe "
+                        "(optional .dist migration recommended)[/yellow]"
+                    )
 
                 # Clean up
                 zip_path.unlink()
