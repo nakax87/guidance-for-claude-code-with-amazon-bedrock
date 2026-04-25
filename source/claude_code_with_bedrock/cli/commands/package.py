@@ -2063,19 +2063,57 @@ REM Create directory
 echo Installing authentication tools...
 if not exist "%USERPROFILE%\\claude-code-with-bedrock" mkdir "%USERPROFILE%\\claude-code-with-bedrock"
 
-REM Copy credential process executable with renamed target
-echo Copying credential process...
-copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to copy credential-process-windows.exe
+set CREDENTIAL_PROCESS_CMD=
+set OTEL_HELPER_PATH=
+
+REM Copy credential process (preferred: dist directory, fallback: single exe)
+if exist "credential-process-windows.dist" (
+    echo Copying credential process directory...
+    xcopy /E /I /Y "credential-process-windows.dist" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process\\" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy credential-process-windows.dist
+        pause
+        exit /b 1
+    )
+    set CREDENTIAL_PROCESS_CMD=%USERPROFILE%\\claude-code-with-bedrock\\credential-process\\credential-process-windows.exe
+) else if exist "credential-process-windows.exe" (
+    echo Copying credential process executable (legacy fallback)...
+    copy /Y "credential-process-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy credential-process-windows.exe
+        pause
+        exit /b 1
+    )
+    set CREDENTIAL_PROCESS_CMD=%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe
+) else (
+    echo ERROR: Neither credential-process-windows.dist nor credential-process-windows.exe found
     pause
     exit /b 1
 )
 
-REM Copy OTEL helper if it exists with renamed target
-if exist "otel-helper-windows.exe" (
-    echo Copying OTEL helper...
+REM Copy OTEL helper (preferred: dist directory, fallback: single exe)
+if exist "otel-helper-windows.dist" (
+    echo Copying OTEL helper directory...
+    xcopy /E /I /Y "otel-helper-windows.dist" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper\\" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy otel-helper-windows.dist
+        pause
+        exit /b 1
+    )
+    set OTEL_HELPER_PATH=%USERPROFILE%\\claude-code-with-bedrock\\otel-helper\\otel-helper-windows.exe
+) else if exist "otel-helper-windows.exe" (
+    echo Copying OTEL helper executable (legacy fallback)...
     copy /Y "otel-helper-windows.exe" "%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe" >nul
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy otel-helper-windows.exe
+        pause
+        exit /b 1
+    )
+    set OTEL_HELPER_PATH=%USERPROFILE%\\claude-code-with-bedrock\\otel-helper.exe
+)
+
+if not defined OTEL_HELPER_PATH (
+    echo WARNING: OTEL helper package not found. Claude Code telemetry helper path will not be configured.
 )
 
 REM Copy configuration
@@ -2102,9 +2140,9 @@ if exist "claude-settings" (
         if not "%SKIP_SETTINGS%"=="true" (
             REM Use PowerShell to replace placeholders
             powershell -Command ^
-            "$otelPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\otel-helper.exe' ^
+            "$otelPath = '%OTEL_HELPER_PATH%' ^
             -replace '\\\\\\\\', '/'; ^
-            $credPath = '%USERPROFILE%\\\\claude-code-with-bedrock\\\\credential-process.exe' ^
+            $credPath = '%CREDENTIAL_PROCESS_CMD%' ^
             -replace '\\\\\\\\', '/'; ^
             (Get-Content 'claude-settings\\\\settings.json') ^
             -replace '__OTEL_HELPER_PATH__', $otelPath ^
@@ -2131,7 +2169,7 @@ for /f %%p in ('powershell -Command ^
 
     REM Set credential process with --profile flag (cross-platform, no wrapper needed)
     aws configure set credential_process ^
-    "%USERPROFILE%\\claude-code-with-bedrock\\credential-process.exe --profile %%p" --profile %%p
+    "%CREDENTIAL_PROCESS_CMD% --profile %%p" --profile %%p
 
 
     REM Set region
