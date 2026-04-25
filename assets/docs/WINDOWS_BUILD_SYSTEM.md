@@ -363,13 +363,16 @@ The distribution package (`dist/`) contains:
 
 ```
 dist/
-├── credential-process-windows.exe      # Windows auth binary (~28 MB)
+├── credential-process-windows.dist/    # Windows auth app directory (standalone)
+│   ├── credential-process-windows.exe
+│   └── ... runtime dependencies
 ├── credential-process-macos-arm64      # macOS ARM64 binary (~26 MB)
-├── otel-helper-windows.exe            # Windows telemetry helper (~28 MB)
+├── otel-helper-windows.dist/           # Windows telemetry helper directory
+│   ├── otel-helper-windows.exe
+│   └── ... runtime dependencies
 ├── otel-helper-macos-arm64            # macOS telemetry helper (~26 MB)
 ├── config.json                        # Configuration with Cognito settings
 ├── install.sh                         # macOS/Linux installer script
-├── install.bat                        # Windows installer script
 ├── README.md                          # Installation instructions
 └── .claude/
     └── settings.json                  # Claude Code telemetry settings
@@ -386,9 +389,11 @@ curl -L -o claude-code-package.zip "<presigned-url>"
 REM Extract
 tar -xf claude-code-package.zip
 
-REM Install
-cd dist
-install.bat
+REM Place the standalone app directories
+mkdir %USERPROFILE%\claude-code-with-bedrock
+xcopy /E /I /Y dist\credential-process-windows.dist %USERPROFILE%\claude-code-with-bedrock\credential-process-windows.dist
+xcopy /E /I /Y dist\otel-helper-windows.dist %USERPROFILE%\claude-code-with-bedrock\otel-helper-windows.dist
+xcopy /Y dist\config.json %USERPROFILE%\claude-code-with-bedrock\config.json
 ```
 
 **macOS/Linux:**
@@ -405,10 +410,10 @@ cd dist
 ./install.sh
 ```
 
-The installer will:
+After placing files:
 
 1. Create `~/claude-code-with-bedrock/` directory
-2. Copy binaries to the directory
+2. Place `credential-process-windows.dist/` and `otel-helper-windows.dist/` directories as-is
 3. Configure AWS CLI profile named `ClaudeCode`
 4. Test authentication
 
@@ -439,6 +444,11 @@ aws logs tail /aws/codebuild/claude-code-auth-windows-build --region us-east-1 -
 
 **Error:** "The term 'SET' is not recognized"
 **Solution:** CodeBuild uses PowerShell, not CMD. The buildspec has been updated to use PowerShell syntax.
+
+#### 5. Defender Flags Built Executable
+
+**Symptom:** Windows Defender quarantines or warns on freshly built binary.
+**Policy/Solution:** Do not use Nuitka `--onefile` for Windows artifacts. Build and distribute `.dist` directories (`credential-process-windows.dist/`, `otel-helper-windows.dist/`) to reduce false-positive detections.
 
 ### Checking Build Logs
 
@@ -501,8 +511,7 @@ The package command provides a direct link to the AWS Console for each build.
 
 ```bash
 C:\Python312\python.exe -m nuitka \
-  --standalone \                    # Include all dependencies
-  --onefile \                      # Single executable file
+  --standalone \                    # Build distributable directory with dependencies
   --assume-yes-for-downloads \      # Auto-download requirements
   --windows-disable-console \       # No console window popup
   --company-name="Claude Code" \
@@ -510,11 +519,17 @@ C:\Python312\python.exe -m nuitka \
   --file-version="1.0.0.0" \
   --product-version="1.0.0.0" \
   --windows-file-description="AWS Credential Process for Claude Code" \
-  --output-filename=credential-process-windows.exe \
+  --output-filename=credential-process-windows \
   --output-dir=. \
-  --remove-output \                # Clean up build artifacts
+  --remove-output \                 # Clean up intermediate build artifacts
   source/credential_provider/__main__.py
 ```
+
+`--standalone` is intentionally used without `--onefile` so that output remains a `.dist` directory. This reduces Microsoft Defender false-positive risk compared with single-file packed executables.
+
+### Microsoft Defender False Positives
+
+To reduce Defender false positives, the project policy is to **avoid `--onefile` builds** for Windows binaries and distribute the generated `.dist` directories directly.
 
 ### Build Performance
 
